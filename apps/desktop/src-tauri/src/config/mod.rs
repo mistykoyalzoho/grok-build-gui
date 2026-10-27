@@ -12,9 +12,10 @@ pub mod memory;
 pub mod project_rules;
 pub mod settings;
 pub use account::{
-    load_auth_account, load_privacy_config, load_sandbox_status, run_doctor, run_login, run_logout,
-    set_sandbox_profile, set_telemetry_enabled, AuthAccountInfo, CliActionResult, DoctorReport,
-    LoginMode, PrivacyConfig, SandboxStatus,
+    list_accounts, load_auth_account, load_privacy_config, load_sandbox_status, remove_account,
+    rename_account, run_doctor, run_login, run_logout, save_current_as_account, set_sandbox_profile,
+    set_telemetry_enabled, switch_account, AccountVault, AuthAccountInfo, CliActionResult,
+    DoctorReport, LoginMode, PrivacyConfig, SandboxStatus,
 };
 pub use custom_models::{
     delete_custom_model, load_custom_models, run_mcp_doctor, save_custom_model, set_default_model,

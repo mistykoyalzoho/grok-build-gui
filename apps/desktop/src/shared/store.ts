@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type {
+  AccountVault,
   AgentStatus,
   AppView,
   AutomationJob,
@@ -73,7 +74,9 @@ interface AppState {
   /** Paths collected from chat / disk for the media gallery. */
   mediaGallery: MediaGalleryItem[];
   accountOpen: boolean;
-  accountTab: "account" | "privacy" | "sandbox" | "doctor" | "safety";
+  accountTab: "accounts" | "account" | "privacy" | "sandbox" | "doctor" | "safety";
+  accountVault: AccountVault | null;
+  accountDropdownOpen: boolean;
   helpOpen: boolean;
   projectConfigOpen: boolean;
   projectConfigTab: "rules" | "models";
@@ -185,8 +188,10 @@ interface AppState {
   setMemoryTab: (t: "remember" | "browse" | "actions" | "imagine") => void;
   setAccountOpen: (v: boolean) => void;
   setAccountTab: (
-    t: "account" | "privacy" | "sandbox" | "doctor" | "safety",
+    t: "accounts" | "account" | "privacy" | "sandbox" | "doctor" | "safety",
   ) => void;
+  setAccountVault: (v: AccountVault | null) => void;
+  setAccountDropdownOpen: (v: boolean) => void;
   setHelpOpen: (v: boolean) => void;
   setProjectConfigOpen: (v: boolean) => void;
   setProjectConfigTab: (t: "rules" | "models") => void;
@@ -636,7 +641,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   memoryTab: "remember",
   mediaGallery: [],
   accountOpen: false,
-  accountTab: "account",
+  accountTab: "accounts",
+  accountVault: null,
+  accountDropdownOpen: false,
   helpOpen: false,
   projectConfigOpen: false,
   projectConfigTab: "rules",
@@ -926,6 +933,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   setMemoryTab: (memoryTab) => set({ memoryTab }),
   setAccountOpen: (accountOpen) => set({ accountOpen }),
   setAccountTab: (accountTab) => set({ accountTab }),
+  setAccountVault: (accountVault) => set({ accountVault }),
+  setAccountDropdownOpen: (accountDropdownOpen) => set({ accountDropdownOpen }),
   setHelpOpen: (helpOpen) => set({ helpOpen }),
   setProjectConfigOpen: (projectConfigOpen) => set({ projectConfigOpen }),
   setProjectConfigTab: (projectConfigTab) => set({ projectConfigTab }),

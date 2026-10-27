@@ -1,14 +1,17 @@
-import { type CSSProperties } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import {
+  authenticateAgent,
   disconnectAgent,
   getPlanModeState,
   getSessionPlan,
   getSessionSignals,
+  listAccounts,
   newSession,
   sendPrompt,
+  switchAccount,
 } from "../../shared/api";
 import { nextId, useAppStore } from "../../shared/store";
-import type { SessionMode } from "../../shared/types";
+import type { AccountProfile, SessionMode } from "../../shared/types";
 
 const MODE_CYCLE: SessionMode[] = ["ask", "auto", "plan", "yolo"];
 
@@ -72,6 +75,10 @@ export function StatusBar() {
   const setMemoryOpen = useAppStore((s) => s.setMemoryOpen);
   const setAccountOpen = useAppStore((s) => s.setAccountOpen);
   const setAccountTab = useAppStore((s) => s.setAccountTab);
+  const accountVault = useAppStore((s) => s.accountVault);
+  const setAccountVault = useAppStore((s) => s.setAccountVault);
+  const accountDropdownOpen = useAppStore((s) => s.accountDropdownOpen);
+  const setAccountDropdownOpen = useAppStore((s) => s.setAccountDropdownOpen);
   const setHelpOpen = useAppStore((s) => s.setHelpOpen);
   const setProjectConfigOpen = useAppStore((s) => s.setProjectConfigOpen);
   const terminals = useAppStore((s) => s.terminals);
@@ -84,6 +91,44 @@ export function StatusBar() {
   const setPlanMarkdown = useAppStore((s) => s.setPlanMarkdown);
   const setPlanModeState = useAppStore((s) => s.setPlanModeState);
   const setAlwaysApprove = useAppStore((s) => s.setAlwaysApprove);
+  const [switchingAccount, setSwitchingAccount] = useState(false);
+
+  useEffect(() => {
+    void listAccounts()
+      .then(setAccountVault)
+      .catch(() => undefined);
+  }, [setAccountVault]);
+
+  const onQuickSwitch = async (id: string) => {
+    if (switchingAccount) return;
+    setSwitchingAccount(true);
+    try {
+      await switchAccount(id);
+      try {
+        await authenticateAgent(env?.binaryPath ?? null);
+      } catch {
+        /* best-effort */
+      }
+      const v = await listAccounts();
+      setAccountVault(v);
+      const active = v.accounts.find((a) => a.id === id);
+      const label = active?.label || active?.email || id;
+      pushItem({
+        id: nextId(),
+        kind: "system",
+        text: `Switched active account → ${label}`,
+      });
+      setAccountDropdownOpen(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSwitchingAccount(false);
+    }
+  };
+
+  const activeAccount = accountVault?.accounts?.find(
+    (a: AccountProfile) => a.isActive || a.id === accountVault.activeAccountId,
+  );
 
   const goHome = async () => {
     await disconnectAgent();
@@ -542,14 +587,213 @@ export function StatusBar() {
         >
           Memory
         </button>
-        <button
-          type="button"
-          style={btn}
-          onClick={() => setAccountOpen(true)}
-          title="Account & safety — login, privacy, sandbox, doctor (/account)"
-        >
-          Account
-        </button>
+        <div style={{ position: "relative" }}>
+          <button
+            type="button"
+            style={{
+              ...btn,
+              borderColor: accountDropdownOpen
+                ? "var(--gb-accent)"
+                : activeAccount
+                  ? "var(--gb-border)"
+                  : "var(--gb-warning)",
+              color: activeAccount ? "var(--gb-ink)" : "var(--gb-warning)",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 5,
+            }}
+            onClick={() => setAccountDropdownOpen(!accountDropdownOpen)}
+            title="1-Click Account Switcher & Profiles"
+          >
+            <span>👤</span>
+            <span
+              style={{
+                maxWidth: 130,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                fontSize: 11,
+              }}
+            >
+              {activeAccount?.label ||
+                activeAccount?.email ||
+                env?.authEmail ||
+                "Account"}
+            </span>
+            <span style={{ fontSize: 9, opacity: 0.7 }}>▾</span>
+          </button>
+
+          {accountDropdownOpen && (
+            <div
+              style={{
+                position: "absolute",
+                top: "calc(100% + 6px)",
+                right: 0,
+                width: 280,
+                background: "var(--gb-surface-raised)",
+                border: "1px solid var(--gb-border)",
+                borderRadius: 8,
+                boxShadow: "0 10px 28px rgba(0,0,0,0.45)",
+                zIndex: 9999,
+                padding: 8,
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  padding: "2px 6px",
+                }}
+              >
+                <span
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 700,
+                    color: "var(--gb-ink-muted)",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.04em",
+                  }}
+                >
+                  Switch Account
+                </span>
+                <span style={{ fontSize: 11, color: "var(--gb-ink-muted)" }}>
+                  {accountVault?.accounts?.length || 0} saved
+                </span>
+              </div>
+
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 4,
+                  maxHeight: 220,
+                  overflowY: "auto",
+                }}
+              >
+                {accountVault?.accounts && accountVault.accounts.length > 0 ? (
+                  accountVault.accounts.map((acc: AccountProfile) => {
+                    const isActive =
+                      acc.isActive || acc.id === accountVault.activeAccountId;
+                    return (
+                      <button
+                        key={acc.id}
+                        type="button"
+                        onClick={() => void onQuickSwitch(acc.id)}
+                        disabled={switchingAccount}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          padding: "6px 8px",
+                          borderRadius: 6,
+                          border: isActive
+                            ? "1px solid var(--gb-accent)"
+                            : "1px solid var(--gb-border)",
+                          background: isActive
+                            ? "var(--gb-surface)"
+                            : "transparent",
+                          color: "var(--gb-ink)",
+                          cursor: "pointer",
+                          textAlign: "left",
+                          gap: 6,
+                        }}
+                      >
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                          <div
+                            style={{
+                              fontWeight: isActive ? 600 : 400,
+                              fontSize: 12,
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {acc.label}
+                          </div>
+                          {acc.email && (
+                            <div
+                              style={{
+                                fontSize: 10,
+                                color: "var(--gb-ink-muted)",
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
+                              }}
+                            >
+                              {acc.email}
+                            </div>
+                          )}
+                        </div>
+                        {isActive ? (
+                          <span
+                            style={{
+                              fontSize: 11,
+                              color: "var(--gb-accent)",
+                              fontWeight: 700,
+                              flexShrink: 0,
+                            }}
+                          >
+                            ✓ Active
+                          </span>
+                        ) : (
+                          <span
+                            style={{
+                              fontSize: 11,
+                              color: "var(--gb-accent)",
+                              fontWeight: 500,
+                              flexShrink: 0,
+                              padding: "2px 6px",
+                              borderRadius: 4,
+                              background: "var(--gb-surface-overlay)",
+                            }}
+                          >
+                            Switch
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })
+                ) : (
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: "var(--gb-ink-muted)",
+                      padding: "8px 6px",
+                      textAlign: "center",
+                    }}
+                  >
+                    No saved accounts
+                  </div>
+                )}
+              </div>
+
+              <div
+                style={{
+                  borderTop: "1px solid var(--gb-border)",
+                  paddingTop: 6,
+                  display: "flex",
+                  gap: 6,
+                }}
+              >
+                <button
+                  type="button"
+                  style={{ ...btn, flex: 1, fontSize: 11, textAlign: "center" }}
+                  onClick={() => {
+                    setAccountDropdownOpen(false);
+                    setAccountTab("accounts");
+                    setAccountOpen(true);
+                  }}
+                >
+                  + Add / Manage Accounts…
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
         <button type="button" style={btn} onClick={() => setSettingsOpen(true)} title="Settings (Ctrl+,)">
           Settings
         </button>

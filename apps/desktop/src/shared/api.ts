@@ -106,6 +106,34 @@ export function getAuthAccount() {
   return invoke<import("./types").AuthAccountInfo>("get_auth_account");
 }
 
+export function listAccounts() {
+  return invoke<import("./types").AccountVault>("list_accounts_cmd");
+}
+
+export function switchAccount(accountId: string) {
+  return invoke<import("./types").AuthAccountInfo>("switch_account_cmd", {
+    args: { accountId },
+  });
+}
+
+export function saveCurrentAsAccount(label?: string) {
+  return invoke<import("./types").AccountVault>("save_current_as_account_cmd", {
+    args: { label: label ?? null },
+  });
+}
+
+export function removeAccount(accountId: string) {
+  return invoke<import("./types").AccountVault>("remove_account_cmd", {
+    args: { accountId },
+  });
+}
+
+export function renameAccount(accountId: string, label: string) {
+  return invoke<import("./types").AccountVault>("rename_account_cmd", {
+    args: { accountId, label },
+  });
+}
+
 export function grokLogin(
   mode: "oauth" | "device" = "oauth",
   binaryOverride?: string | null,

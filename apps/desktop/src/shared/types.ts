@@ -10,9 +10,34 @@ export interface EnvironmentInfo {
   authMode?: string | null;
 }
 
+export interface AccountProfile {
+  id: string;
+  label: string;
+  email?: string | null;
+  authMode?: string | null;
+  firstName?: string | null;
+  userId?: string | null;
+  teamId?: string | null;
+  principalType?: string | null;
+  expiresAt?: string | null;
+  createTime?: string | null;
+  oidcIssuer?: string | null;
+  codingDataRetentionOptOut?: boolean | null;
+  zeroDataRetention?: boolean | null;
+  isActive: boolean;
+  addedAt: string;
+}
+
+export interface AccountVault {
+  activeAccountId?: string | null;
+  accounts: AccountProfile[];
+}
+
 /** Privacy-safe account meta from ~/.grok/auth.json (no tokens). */
 export interface AuthAccountInfo {
   present: boolean;
+  activeAccountId?: string | null;
+  activeLabel?: string | null;
   email?: string | null;
   authMode?: string | null;
   firstName?: string | null;

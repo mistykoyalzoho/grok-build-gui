@@ -8,13 +8,19 @@ import {
   grokDoctor,
   grokLogin,
   grokLogout,
+  listAccounts,
+  removeAccount,
+  renameAccount,
+  saveCurrentAsAccount,
   sendPrompt,
   setSandboxProfile,
   setTelemetryEnabled,
+  switchAccount,
 } from "../../shared/api";
 import { activateModalA11y } from "../../shared/modalA11y";
 import { nextId, useAppStore } from "../../shared/store";
 import type {
+  AccountProfile,
   AuthAccountInfo,
   CliActionResult,
   DoctorReport,
@@ -24,7 +30,7 @@ import type {
   SessionMode,
 } from "../../shared/types";
 
-type Tab = "account" | "privacy" | "sandbox" | "doctor" | "safety";
+type Tab = "accounts" | "account" | "privacy" | "sandbox" | "doctor" | "safety";
 
 const btn: CSSProperties = {
   fontSize: 12,
@@ -61,6 +67,8 @@ export function AccountSafetyModal() {
   const setOpen = useAppStore((s) => s.setAccountOpen);
   const preferredTab = useAppStore((s) => s.accountTab);
   const setPreferredTab = useAppStore((s) => s.setAccountTab);
+  const accountVault = useAppStore((s) => s.accountVault);
+  const setAccountVault = useAppStore((s) => s.setAccountVault);
   const env = useAppStore((s) => s.env);
   const setEnv = useAppStore((s) => s.setEnv);
   const setError = useAppStore((s) => s.setError);
@@ -82,6 +90,9 @@ export function AccountSafetyModal() {
   const [msg, setMsg] = useState<string | null>(null);
   const [loginLog, setLoginLog] = useState<string | null>(null);
   const [sandboxPick, setSandboxPick] = useState("off");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editLabel, setEditLabel] = useState("");
+  const [customLabel, setCustomLabel] = useState("");
   const panelRef = useRef<HTMLDivElement>(null);
 
   const ready = status === "ready";
@@ -94,13 +105,15 @@ export function AccountSafetyModal() {
 
   const refreshAccount = useCallback(async () => {
     try {
-      const [a, p, s, e] = await Promise.all([
+      const [a, v, p, s, e] = await Promise.all([
         getAuthAccount(),
+        listAccounts().catch(() => null),
         getPrivacyConfig(),
         getSandboxStatus(),
         getEnvironment(),
       ]);
       setAccount(a);
+      if (v) setAccountVault(v);
       setPrivacy(p);
       setSandbox(s);
       setSandboxPick(s.configProfile || s.effectiveProfile || "off");
@@ -108,7 +121,7 @@ export function AccountSafetyModal() {
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [setEnv, setError]);
+  }, [setAccountVault, setEnv, setError]);
 
   useEffect(() => {
     if (open) {
@@ -118,6 +131,80 @@ export function AccountSafetyModal() {
       void refreshAccount();
     }
   }, [open, preferredTab, refreshAccount]);
+
+  const onSwitchAccount = async (id: string) => {
+    setWorking(true);
+    try {
+      const updated = await switchAccount(id);
+      setAccount(updated);
+      try {
+        await authenticateAgent(binaryOverride);
+      } catch {
+        /* best-effort */
+      }
+      const v = await listAccounts();
+      setAccountVault(v);
+      const active = v.accounts.find((a) => a.id === id);
+      const label = active?.label || active?.email || id;
+      setMsg(`Active account switched to "${label}"`);
+      pushItem({
+        id: nextId(),
+        kind: "system",
+        text: `Switched active account → ${label}`,
+      });
+      await refreshAccount();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const onRenameAccount = async (id: string, label: string) => {
+    if (!label.trim()) return;
+    setWorking(true);
+    try {
+      const v = await renameAccount(id, label.trim());
+      setAccountVault(v);
+      setEditingId(null);
+      await refreshAccount();
+      setMsg(`Account renamed to "${label.trim()}"`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const onRemoveAccount = async (id: string) => {
+    if (!window.confirm("Remove this account from the saved accounts vault?")) return;
+    setWorking(true);
+    try {
+      const v = await removeAccount(id);
+      setAccountVault(v);
+      await refreshAccount();
+      setMsg("Account removed from vault");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const onSaveCurrentProfile = async () => {
+    setWorking(true);
+    try {
+      const v = await saveCurrentAsAccount(customLabel.trim() || undefined);
+      setAccountVault(v);
+      setCustomLabel("");
+      await refreshAccount();
+      setMsg("Current credentials saved to accounts vault");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setWorking(false);
+    }
+  };
 
   if (!open) return null;
 
@@ -357,7 +444,8 @@ export function AccountSafetyModal() {
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
           {(
             [
-              ["account", "Account"],
+              ["accounts", "Accounts"],
+              ["account", "Status"],
               ["privacy", "Privacy"],
               ["sandbox", "Sandbox"],
               ["doctor", "Doctor"],
@@ -391,6 +479,229 @@ export function AccountSafetyModal() {
         ) : null}
 
         <div style={{ overflow: "auto", flex: 1, minHeight: 0 }}>
+          {tab === "accounts" ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div style={{ fontSize: 13, color: "var(--gb-ink-muted)" }}>
+                  {accountVault?.accounts?.length || 0} account profile{(accountVault?.accounts?.length || 0) === 1 ? "" : "s"} saved. Switch accounts with 1 click.
+                </div>
+                <button
+                  type="button"
+                  style={btn}
+                  disabled={working}
+                  onClick={() => void refreshAccount()}
+                >
+                  Refresh
+                </button>
+              </div>
+
+              {accountVault?.accounts && accountVault.accounts.length > 0 ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {accountVault.accounts.map((acc: AccountProfile) => {
+                    const isActive = acc.isActive || acc.id === accountVault.activeAccountId;
+                    const isEditing = editingId === acc.id;
+
+                    return (
+                      <div
+                        key={acc.id}
+                        style={{
+                          ...card,
+                          borderColor: isActive ? "var(--gb-accent)" : "var(--gb-border)",
+                          background: isActive ? "var(--gb-surface-raised)" : "var(--gb-surface)",
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 8,
+                        }}
+                      >
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, flex: 1 }}>
+                            <span style={{ fontSize: 16 }}>👤</span>
+                            {isEditing ? (
+                              <div style={{ display: "flex", gap: 6, alignItems: "center", flex: 1 }}>
+                                <input
+                                  type="text"
+                                  value={editLabel}
+                                  onChange={(e) => setEditLabel(e.target.value)}
+                                  placeholder="Account label (e.g. Work, Personal)"
+                                  style={{
+                                    background: "var(--gb-surface)",
+                                    color: "var(--gb-ink)",
+                                    border: "1px solid var(--gb-accent)",
+                                    borderRadius: 6,
+                                    padding: "4px 8px",
+                                    fontSize: 12,
+                                    flex: 1,
+                                  }}
+                                  autoFocus
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") void onRenameAccount(acc.id, editLabel);
+                                    if (e.key === "Escape") setEditingId(null);
+                                  }}
+                                />
+                                <button
+                                  type="button"
+                                  style={primary}
+                                  onClick={() => void onRenameAccount(acc.id, editLabel)}
+                                >
+                                  Save
+                                </button>
+                                <button
+                                  type="button"
+                                  style={btn}
+                                  onClick={() => setEditingId(null)}
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            ) : (
+                              <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                                <span style={{ fontWeight: 600, fontSize: 14 }}>{acc.label}</span>
+                                {isActive ? (
+                                  <span
+                                    style={{
+                                      fontSize: 10,
+                                      fontWeight: 700,
+                                      padding: "2px 6px",
+                                      borderRadius: 4,
+                                      background: "var(--gb-accent-dim)",
+                                      color: "var(--gb-accent)",
+                                      textTransform: "uppercase",
+                                    }}
+                                  >
+                                    Active
+                                  </span>
+                                ) : null}
+                              </div>
+                            )}
+                          </div>
+
+                          <div style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
+                            {isActive ? (
+                              <button
+                                type="button"
+                                style={{
+                                  ...btn,
+                                  borderColor: "var(--gb-accent)",
+                                  color: "var(--gb-accent)",
+                                  fontWeight: 600,
+                                  cursor: "default",
+                                }}
+                                disabled
+                              >
+                                ✓ Active
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                style={{ ...primary, fontSize: 12 }}
+                                disabled={working}
+                                onClick={() => void onSwitchAccount(acc.id)}
+                                title="Switch to this account immediately"
+                              >
+                                ⚡ Switch
+                              </button>
+                            )}
+                            {!isEditing && (
+                              <button
+                                type="button"
+                                style={btn}
+                                disabled={working}
+                                onClick={() => {
+                                  setEditingId(acc.id);
+                                  setEditLabel(acc.label);
+                                }}
+                                title="Rename account label"
+                              >
+                                ✏️
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              style={{ ...btn, color: "var(--gb-danger)" }}
+                              disabled={working}
+                              onClick={() => void onRemoveAccount(acc.id)}
+                              title="Remove from saved accounts"
+                            >
+                              🗑️
+                            </button>
+                          </div>
+                        </div>
+
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 4, marginTop: 4 }}>
+                          {acc.email && <Row label="Email" value={acc.email} />}
+                          {acc.authMode && <Row label="Mode" value={acc.authMode} />}
+                          {acc.teamId && <Row label="Team" value={acc.teamId.slice(0, 16) + "…"} />}
+                          {acc.expiresAt && <Row label="Expires" value={acc.expiresAt} />}
+                          {acc.codingDataRetentionOptOut != null && (
+                            <Row label="Retention" value={acc.codingDataRetentionOptOut ? "Opted Out" : "Standard"} />
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div style={{ ...card, textAlign: "center", color: "var(--gb-ink-muted)", padding: 20 }}>
+                  No accounts registered in vault yet. Sign in or save current credentials below!
+                </div>
+              )}
+
+              <section style={{ ...card, marginTop: 6 }}>
+                <div style={sectionTitle}>+ Add Another Account</div>
+                <div style={{ fontSize: 12, color: "var(--gb-ink-muted)", marginBottom: 10 }}>
+                  Sign in to another xAI / Grok account. It will automatically be added to your saved accounts above for instant switching.
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  <button
+                    type="button"
+                    style={primary}
+                    disabled={working || !env?.found}
+                    onClick={() => void onLogin("oauth")}
+                  >
+                    {working ? "…" : "+ Login via Browser (OAuth)"}
+                  </button>
+                  <button
+                    type="button"
+                    style={btn}
+                    disabled={working || !env?.found}
+                    onClick={() => void onLogin("device")}
+                    title="Device-code flow for headless / remote"
+                  >
+                    + Login via Device Code
+                  </button>
+                </div>
+
+                {account?.present && (
+                  <div style={{ marginTop: 14, paddingTop: 10, borderTop: "1px solid var(--gb-border)", display: "flex", gap: 8, alignItems: "center" }}>
+                    <input
+                      type="text"
+                      value={customLabel}
+                      onChange={(e) => setCustomLabel(e.target.value)}
+                      placeholder="Label for current session (e.g. Work, Research)"
+                      style={{
+                        background: "var(--gb-surface)",
+                        color: "var(--gb-ink)",
+                        border: "1px solid var(--gb-border)",
+                        borderRadius: 6,
+                        padding: "5px 10px",
+                        fontSize: 12,
+                        flex: 1,
+                      }}
+                    />
+                    <button
+                      type="button"
+                      style={btn}
+                      disabled={working}
+                      onClick={() => void onSaveCurrentProfile()}
+                    >
+                      Save Current as Profile
+                    </button>
+                  </div>
+                )}
+              </section>
+            </div>
+          ) : null}
+
           {tab === "account" ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               <section style={card}>

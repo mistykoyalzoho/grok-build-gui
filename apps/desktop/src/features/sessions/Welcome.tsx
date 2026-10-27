@@ -294,12 +294,12 @@ export function Welcome({ env }: { env: EnvironmentInfo }) {
                       cursor: "pointer",
                     }}
                     onClick={() => {
-                      setAccountTab("account");
+                      setAccountTab("accounts");
                       setAccountOpen(true);
                     }}
-                    title="Login, logout, privacy, sandbox, doctor"
+                    title="Switch or manage multiple accounts"
                   >
-                    Account…
+                    Switch Account…
                   </button>
                 </>
               ) : null}

@@ -17,12 +17,56 @@ use super::grok_config::config_toml_path;
 use super::grok_home;
 use crate::error::{AppError, AppResult};
 
-// ── Auth account (privacy-safe meta, no tokens) ────────────────────────────
+// ── Auth account & Multi-Account Vault ─────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountProfile {
+    pub id: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub principal_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub create_time: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oidc_issuer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coding_data_retention_opt_out: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zero_data_retention: Option<bool>,
+    pub is_active: bool,
+    pub added_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_payload: Option<JsonValue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountVault {
+    pub active_account_id: Option<String>,
+    pub accounts: Vec<AccountProfile>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthAccountInfo {
     pub present: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_account_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -52,6 +96,247 @@ pub struct AuthAccountInfo {
     pub api_key_env: bool,
     #[serde(default)]
     pub auth_path: String,
+}
+
+pub fn accounts_vault_path() -> std::path::PathBuf {
+    grok_home().join("gui").join("accounts.json")
+}
+
+pub fn load_account_vault() -> AccountVault {
+    let path = accounts_vault_path();
+    let mut vault = if let Ok(raw) = fs::read_to_string(&path) {
+        serde_json::from_str::<AccountVault>(&raw).unwrap_or_default()
+    } else {
+        AccountVault::default()
+    };
+
+    // Auto-migrate or sync with ~/.grok/auth.json if needed
+    let home = grok_home();
+    let auth_path = home.join("auth.json");
+    if let Ok(raw) = fs::read_to_string(&auth_path) {
+        if let Ok(v) = serde_json::from_str::<JsonValue>(&raw) {
+            if let Some(e) = pick_auth_entry(&v) {
+                let email = str_field(e, &["email", "user_email"]);
+                let user_id = str_field(e, &["user_id", "userId", "principal_id", "principalId"]);
+                let key_id = user_id
+                    .clone()
+                    .or_else(|| email.clone())
+                    .unwrap_or_else(|| "acc_default".into());
+
+                // Check if account already registered in vault
+                let existing_idx = vault
+                    .accounts
+                    .iter()
+                    .position(|a| a.id == key_id || (email.is_some() && a.email == email));
+
+                let now = chrono_now_iso();
+                let profile = AccountProfile {
+                    id: key_id.clone(),
+                    label: email
+                        .clone()
+                        .or_else(|| str_field(e, &["first_name", "firstName"]))
+                        .unwrap_or_else(|| "Default Account".into()),
+                    email: email.clone(),
+                    auth_mode: str_field(e, &["auth_mode", "authMode", "mode"]),
+                    first_name: str_field(e, &["first_name", "firstName", "name"]),
+                    user_id,
+                    team_id: str_field(e, &["team_id", "teamId"]),
+                    principal_type: str_field(e, &["principal_type", "principalType"]),
+                    expires_at: str_field(e, &["expires_at", "expiresAt"]),
+                    create_time: str_field(e, &["create_time", "createTime"]),
+                    oidc_issuer: str_field(e, &["oidc_issuer", "oidcIssuer", "issuer"]),
+                    coding_data_retention_opt_out: bool_field(
+                        e,
+                        &[
+                            "coding_data_retention_opt_out",
+                            "codingDataRetentionOptOut",
+                            "coding_data_opt_out",
+                        ],
+                    ),
+                    zero_data_retention: bool_field(
+                        e,
+                        &["zero_data_retention", "zeroDataRetention", "zdr", "zdr_enabled"],
+                    ),
+                    is_active: true,
+                    added_at: now,
+                    auth_payload: Some(v.clone()),
+                };
+
+                match existing_idx {
+                    Some(idx) => {
+                        let preserved_label = vault.accounts[idx].label.clone();
+                        let preserved_added = vault.accounts[idx].added_at.clone();
+                        vault.accounts[idx] = profile;
+                        vault.accounts[idx].label = preserved_label;
+                        vault.accounts[idx].added_at = preserved_added;
+                    }
+                    None => {
+                        vault.accounts.push(profile);
+                    }
+                }
+
+                vault.active_account_id = Some(key_id.clone());
+                for a in &mut vault.accounts {
+                    a.is_active = a.id == key_id;
+                }
+                let _ = save_account_vault(&vault);
+            }
+        }
+    }
+
+    vault
+}
+
+pub fn save_account_vault(vault: &AccountVault) -> AppResult<()> {
+    let path = accounts_vault_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| AppError::Message(format!("create accounts dir: {e}")))?;
+    }
+    let data = serde_json::to_string_pretty(vault)
+        .map_err(|e| AppError::Message(format!("serialize accounts: {e}")))?;
+    fs::write(&path, data)
+        .map_err(|e| AppError::Message(format!("write accounts.json: {e}")))?;
+    Ok(())
+}
+
+fn chrono_now_iso() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = duration.as_secs();
+    format!("{secs}")
+}
+
+pub fn list_accounts() -> AppResult<AccountVault> {
+    Ok(load_account_vault())
+}
+
+pub fn switch_account(account_id: &str) -> AppResult<AuthAccountInfo> {
+    let mut vault = load_account_vault();
+    let target = vault
+        .accounts
+        .iter()
+        .find(|a| a.id == account_id)
+        .cloned()
+        .ok_or_else(|| AppError::Message(format!("Account not found: {account_id}")))?;
+
+    if let Some(payload) = target.auth_payload {
+        let auth_path = grok_home().join("auth.json");
+        let raw = serde_json::to_string_pretty(&payload)
+            .map_err(|e| AppError::Message(format!("serialize auth: {e}")))?;
+        fs::write(&auth_path, raw)
+            .map_err(|e| AppError::Message(format!("write auth.json: {e}")))?;
+    }
+
+    vault.active_account_id = Some(account_id.to_string());
+    for a in &mut vault.accounts {
+        a.is_active = a.id == account_id;
+    }
+    save_account_vault(&vault)?;
+
+    Ok(load_auth_account())
+}
+
+pub fn save_current_as_account(label: Option<String>) -> AppResult<AccountVault> {
+    let mut vault = load_account_vault();
+    let auth_path = grok_home().join("auth.json");
+    let raw = fs::read_to_string(&auth_path)
+        .map_err(|e| AppError::Message(format!("read auth.json: {e}")))?;
+    let v: JsonValue = serde_json::from_str(&raw)
+        .map_err(|e| AppError::Message(format!("parse auth.json: {e}")))?;
+
+    let e = pick_auth_entry(&v).ok_or_else(|| AppError::Message("No auth entry found".into()))?;
+
+    let email = str_field(e, &["email", "user_email"]);
+    let user_id = str_field(e, &["user_id", "userId", "principal_id", "principalId"]);
+    let key_id = user_id
+        .clone()
+        .or_else(|| email.clone())
+        .unwrap_or_else(|| format!("acc_{}", chrono_now_iso()));
+
+    let default_label = label.or(email.clone()).unwrap_or_else(|| "Account".into());
+
+    let profile = AccountProfile {
+        id: key_id.clone(),
+        label: default_label,
+        email: email.clone(),
+        auth_mode: str_field(e, &["auth_mode", "authMode", "mode"]),
+        first_name: str_field(e, &["first_name", "firstName", "name"]),
+        user_id,
+        team_id: str_field(e, &["team_id", "teamId"]),
+        principal_type: str_field(e, &["principal_type", "principalType"]),
+        expires_at: str_field(e, &["expires_at", "expiresAt"]),
+        create_time: str_field(e, &["create_time", "createTime"]),
+        oidc_issuer: str_field(e, &["oidc_issuer", "oidcIssuer", "issuer"]),
+        coding_data_retention_opt_out: bool_field(
+            e,
+            &[
+                "coding_data_retention_opt_out",
+                "codingDataRetentionOptOut",
+                "coding_data_opt_out",
+            ],
+        ),
+        zero_data_retention: bool_field(
+            e,
+            &["zero_data_retention", "zeroDataRetention", "zdr", "zdr_enabled"],
+        ),
+        is_active: true,
+        added_at: chrono_now_iso(),
+        auth_payload: Some(v),
+    };
+
+    if let Some(idx) = vault.accounts.iter().position(|a| a.id == key_id) {
+        vault.accounts[idx] = profile;
+    } else {
+        vault.accounts.push(profile);
+    }
+
+    vault.active_account_id = Some(key_id.clone());
+    for a in &mut vault.accounts {
+        a.is_active = a.id == key_id;
+    }
+    save_account_vault(&vault)?;
+    Ok(vault)
+}
+
+pub fn remove_account(account_id: &str) -> AppResult<AccountVault> {
+    let mut vault = load_account_vault();
+    let was_active = vault.active_account_id.as_deref() == Some(account_id);
+    vault.accounts.retain(|a| a.id != account_id);
+
+    if was_active {
+        if let Some(first) = vault.accounts.first_mut() {
+            first.is_active = true;
+            vault.active_account_id = Some(first.id.clone());
+            if let Some(payload) = &first.auth_payload {
+                let auth_path = grok_home().join("auth.json");
+                let _ = fs::write(
+                    &auth_path,
+                    serde_json::to_string_pretty(payload).unwrap_or_default(),
+                );
+            }
+        } else {
+            vault.active_account_id = None;
+            let auth_path = grok_home().join("auth.json");
+            let _ = fs::remove_file(&auth_path);
+        }
+    }
+    save_account_vault(&vault)?;
+    Ok(vault)
+}
+
+pub fn rename_account(account_id: &str, label: &str) -> AppResult<AccountVault> {
+    let mut vault = load_account_vault();
+    let acc = vault
+        .accounts
+        .iter_mut()
+        .find(|a| a.id == account_id)
+        .ok_or_else(|| AppError::Message(format!("Account not found: {account_id}")))?;
+    acc.label = label.trim().to_string();
+    save_account_vault(&vault)?;
+    Ok(vault)
 }
 
 pub fn load_auth_account() -> AuthAccountInfo {
@@ -110,6 +395,19 @@ pub fn load_auth_account() -> AuthAccountInfo {
                 .into(),
         );
     }
+
+    let vault_path = accounts_vault_path();
+    if let Ok(vault_raw) = fs::read_to_string(&vault_path) {
+        if let Ok(vault) = serde_json::from_str::<AccountVault>(&vault_raw) {
+            info.active_account_id = vault.active_account_id.clone();
+            if let Some(active_id) = &vault.active_account_id {
+                if let Some(active_acc) = vault.accounts.iter().find(|a| a.id == *active_id) {
+                    info.active_label = Some(active_acc.label.clone());
+                }
+            }
+        }
+    }
+
     info
 }
 
@@ -674,5 +972,37 @@ mod tests {
     #[test]
     fn builtins_include_workspace() {
         assert!(BUILTIN_PROFILES.contains(&"workspace"));
+    }
+
+    #[test]
+    fn account_vault_roundtrip() {
+        let profile = AccountProfile {
+            id: "acc_1".into(),
+            label: "Work Account".into(),
+            email: Some("dev@company.com".into()),
+            auth_mode: Some("oidc".into()),
+            first_name: Some("Dev".into()),
+            user_id: Some("u_123".into()),
+            team_id: Some("team_abc".into()),
+            principal_type: None,
+            expires_at: None,
+            create_time: None,
+            oidc_issuer: None,
+            coding_data_retention_opt_out: Some(true),
+            zero_data_retention: Some(false),
+            is_active: true,
+            added_at: "1700000000".into(),
+            auth_payload: Some(serde_json::json!({ "email": "dev@company.com", "key": "secret" })),
+        };
+        let vault = AccountVault {
+            active_account_id: Some("acc_1".into()),
+            accounts: vec![profile],
+        };
+        let json_str = serde_json::to_string(&vault).expect("serialize");
+        let parsed: AccountVault = serde_json::from_str(&json_str).expect("deserialize");
+        assert_eq!(parsed.active_account_id.as_deref(), Some("acc_1"));
+        assert_eq!(parsed.accounts.len(), 1);
+        assert_eq!(parsed.accounts[0].label, "Work Account");
+        assert_eq!(parsed.accounts[0].coding_data_retention_opt_out, Some(true));
     }
 }
